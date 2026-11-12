@@ -2,7 +2,7 @@
 """hao-contract: the interfaces between the research, runtime and patcher repositories, checked (workflow plan step 3).
 
   hao_contract.py check REPO            run the checks REPO/contract.json names; one line per problem, exit 1
-  hao_contract.py lock REPO GLOB... --os-build B [--cache-uuid U] [--format F]
+  hao_contract.py lock REPO GLOB... --os-build B [--input-kind K] [--sdk-build S] [--cache-uuid U] [--format F]
                                         print a generated.lock for the files GLOB matches (review, then commit)
   hao_contract.py stamps REPO GLOB...   the OS build stamped in each generated file's header
 
@@ -11,8 +11,9 @@ check is one of
   {"kind": "hygiene", "allow": {PATH: [PATTERN LABELS]}, "commits": N}
         no tracked file (and none of the last N commit messages) names a private location
   {"kind": "generated-lock", "lock": "generated.lock", "globs": ["src/*_gen.inc"]}
-        every file the globs match is listed with its sha256, every listed file matches, and a file whose
-        header stamps an OS build must stamp the entry's os_build (the 26B131-rows-under-a-26A428-stamp case)
+        every file the globs match is listed with its sha256, export id, format and input_kind; every listed file
+        matches; a cache-kind file must be stamped with its os_build (the 26B131-rows-under-a-26A428-stamp case);
+        an sdk+census file stamped for another build is a coverage note; an sdk-kind file needs only sdk_build
   {"kind": "payload", "manifest": PATH, "os_build": B, "layout_version": N}
         a hao-runtime payload-manifest.json: clean, the declared OS build and install-layout version, and every
         listed file present with its sha256
@@ -36,7 +37,13 @@ PRIVATE = [
     ('home folder', re.compile('/' r'Users/(?!Shared\b)[A-Za-z]')),
 ]
 STAMP = re.compile(r'\b(\d{2}[A-Z]\d{2,4}[a-z]?)\)')
-LOCK_FIELDS = ('path', 'sha256', 'export_id', 'os_build', 'cache_uuid', 'format')
+LOCK_FIELDS = ('path', 'sha256', 'export_id', 'format', 'input_kind')
+# What each input kind must name, and what a header stamp is compared with:
+#   sdk         SDK headers only: sdk_build; the stamp is not tied to an OS build
+#   sdk+census  SDK headers + an OS build's import census: sdk_build and os_build (the census's); a stamp
+#               for another OS build is a coverage note, not a failure
+#   cache       shared caches: os_build and cache_uuid; the stamp must equal os_build
+INPUT_KINDS = {'sdk': ('sdk_build',), 'sdk+census': ('sdk_build', 'os_build'), 'cache': ('os_build', 'cache_uuid')}
 PAYLOAD_FIELDS = ('version', 'commit', 'clean', 'os_build', 'cache_uuid', 'units_version', 'units_sha256',
                   'layout_version', 'files')
 
@@ -104,8 +111,13 @@ def check_lock(repo, c):
     except ValueError as x:
         return ['generated-lock: %s is not JSON (%s)' % (lock_path.name, x)]
     bad, listed = [], {}
+    notes = []
     for e in lock.get('files', []):
-        missing = [f for f in LOCK_FIELDS if f not in e]
+        kind = e.get('input_kind')
+        if kind not in INPUT_KINDS:
+            bad.append('generated-lock: %s: input_kind must be one of %s' % (e.get('path', '?'), ', '.join(INPUT_KINDS)))
+            continue
+        missing = [f for f in LOCK_FIELDS + INPUT_KINDS[kind] if f not in e]
         if missing:
             bad.append('generated-lock: %s lacks %s' % (e.get('path', '?'), ', '.join(missing)))
             continue
@@ -118,11 +130,16 @@ def check_lock(repo, c):
             bad.append('generated-lock: %s differs from its locked sha256 (edited by hand, or not re-exported)'
                        % e['path'])
         stamp = stamp_of(p)
-        if stamp and stamp != e['os_build']:
+        if stamp and kind == 'cache' and stamp != e['os_build']:
             bad.append('generated-lock: %s is stamped %s but locked as %s' % (e['path'], stamp, e['os_build']))
+        elif stamp and kind == 'sdk+census' and stamp != e['os_build']:
+            notes.append('generated-lock: note: %s covers %s\'s imports (stamp), locked census %s: coverage, not '
+                         'correctness' % (e['path'], stamp, e['os_build']))
     for name in tracked(repo):
         if any(fnmatch.fnmatch(name, g) for g in c.get('globs', [])) and name not in listed:
             bad.append('generated-lock: %s is generated but not in %s' % (name, lock_path.name))
+    for n in notes:
+        print(n, file=sys.stderr)
     return bad
 
 
@@ -184,9 +201,9 @@ def main(argv):
         globs = [a for a in argv[2:] if not a.startswith('--') and a not in opts.values()]
         files = []
         for name in sorted(n for n in tracked(repo) if any(fnmatch.fnmatch(n, g) for g in globs)):
-            files.append({'path': name, 'sha256': sha256(repo / name), 'export_id': None,
-                          'os_build': opts['--os-build'], 'cache_uuid': opts.get('--cache-uuid'),
-                          'format': opts.get('--format')})
+            files.append({'path': name, 'sha256': sha256(repo / name), 'export_id': None, 'format': opts.get('--format'),
+                      'input_kind': opts.get('--input-kind', 'cache'), 'os_build': opts['--os-build'],
+                      'sdk_build': opts.get('--sdk-build'), 'cache_uuid': opts.get('--cache-uuid')})
         print(json.dumps({'lock_version': 1, 'files': files}, indent=1))
         return 0
     print(__doc__)

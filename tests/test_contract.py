@@ -28,7 +28,7 @@ class Repo(unittest.TestCase):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(data if isinstance(data, bytes) else data.encode())
         subprocess.run(['git', '-C', str(self.r), 'add', name], check=True)
-        subprocess.run(['git', '-C', str(self.r), 'commit', '-qm', commit], check=True)
+        subprocess.run(['git', '-C', str(self.r), 'commit', '--allow-empty', '-qm', commit], check=True)
 
     def contract(self, *checks):
         self.write('contract.json', json.dumps({'contract_version': 1, 'role': 'runtime', 'checks': list(checks)}))
@@ -51,7 +51,7 @@ class GeneratedLock(Repo):
 
     def lock(self, **over):
         e = {'path': 'src/x_gen.inc', 'sha256': sha(self.STAMPED.encode()), 'export_id': 'e1', 'os_build': '26B131',
-             'cache_uuid': 'U', 'format': 'aggspi/1'}
+             'cache_uuid': 'U', 'format': 'aggspi/1', 'input_kind': 'cache'}
         e.update(over)
         self.write('generated.lock', json.dumps({'lock_version': 1, 'files': [e]}))
 
@@ -74,6 +74,20 @@ class GeneratedLock(Repo):
         self.lock(sha256=sha(old.encode()))
         bad = self.contract({'kind': 'generated-lock', 'globs': ['src/*_gen.inc']})
         self.assertEqual(bad, ['generated-lock: src/x_gen.inc is stamped 26A428 but locked as 26B131'])
+
+
+class InputKinds(GeneratedLock):
+    def test_census_stamp_is_a_note_and_sdk_needs_no_os_build(self):
+        old = self.STAMPED.replace('27.2.1 (26B131)', '27.0 (26A428)')
+        self.write('src/x_gen.inc', old)
+        self.lock(sha256=sha(old.encode()), input_kind='sdk+census', sdk_build='26B118')
+        self.assertEqual(self.contract({'kind': 'generated-lock', 'globs': ['src/*_gen.inc']}), [])
+        self.lock(sha256=sha(old.encode()), input_kind='sdk', sdk_build='26B118')
+        self.assertEqual(self.contract({'kind': 'generated-lock', 'globs': ['src/*_gen.inc']}), [])
+        self.lock(sha256=sha(old.encode()), input_kind='census')
+        self.assertIn('input_kind must be one of', self.contract({'kind': 'generated-lock', 'globs': ['src/*_gen.inc']})[0])
+        self.lock(sha256=sha(old.encode()), input_kind='sdk+census')          # no sdk_build
+        self.assertIn('lacks sdk_build', self.contract({'kind': 'generated-lock', 'globs': ['src/*_gen.inc']})[0])
 
 
 class Payload(Repo):
