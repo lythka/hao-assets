@@ -10,10 +10,12 @@ REPO/contract.json: {"contract_version": 1, "role": "research" | "runtime" | "pa
 check is one of
   {"kind": "hygiene", "allow": {PATH: [PATTERN LABELS]}, "commits": N}
         no tracked file (and none of the last N commit messages) names a private location
-  {"kind": "generated-lock", "lock": "generated.lock", "globs": ["src/*_gen.inc"]}
+  {"kind": "generated-lock", "lock": "generated.lock", "globs": ["src/*_gen.inc"], "stamp_header": PATH}
         every file the globs match is listed with its sha256, export id, format and input_kind; every listed file
         matches; a cache-kind file must be stamped with its os_build (the 26B131-rows-under-a-26A428-stamp case);
-        an sdk+census file stamped for another build is a coverage note; an sdk-kind file needs only sdk_build
+        an sdk+census file stamped for another build is a coverage note; an sdk-kind file needs only sdk_build;
+        with stamp_header, every cache table's os_build equals its HAO_GEN_OS_BUILD and every format its
+        HAO_GEN_FORMAT (the runtime's one startup stamp)
   {"kind": "payload", "manifest": PATH, "os_build": B, "layout_version": N}
         a hao-runtime payload-manifest.json: clean, the declared OS build and install-layout version, and every
         listed file present with its sha256
@@ -135,6 +137,21 @@ def check_lock(repo, c):
         elif stamp and kind == 'sdk+census' and stamp != e['os_build']:
             notes.append('generated-lock: note: %s covers %s\'s imports (stamp), locked census %s: coverage, not '
                          'correctness' % (e['path'], stamp, e['os_build']))
+    header = c.get('stamp_header')
+    if header:
+        text = (repo / header).read_text() if (repo / header).is_file() else ''
+        build = re.search(r'#define\s+HAO_GEN_OS_BUILD\s+"([^"]+)"', text)
+        fmt = re.search(r'#define\s+HAO_GEN_FORMAT\s+(\d+)', text)
+        if not build or not fmt:
+            bad.append('generated-lock: %s does not define HAO_GEN_OS_BUILD and HAO_GEN_FORMAT' % header)
+        else:
+            for e in listed.values():
+                if e['input_kind'] == 'cache' and e['os_build'] != build.group(1):
+                    bad.append('generated-lock: %s is a cache table for %s, but %s stamps %s' % (
+                        e['path'], e['os_build'], header, build.group(1)))
+                if str(e['format']) != fmt.group(1):
+                    bad.append('generated-lock: %s has format %s, %s says %s' % (e['path'], e['format'], header,
+                                                                               fmt.group(1)))
     for name in tracked(repo):
         if any(fnmatch.fnmatch(name, g) for g in c.get('globs', [])) and name not in listed:
             bad.append('generated-lock: %s is generated but not in %s' % (name, lock_path.name))

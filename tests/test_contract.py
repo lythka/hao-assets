@@ -90,6 +90,20 @@ class InputKinds(GeneratedLock):
         self.assertIn('lacks sdk_build', self.contract({'kind': 'generated-lock', 'globs': ['src/*_gen.inc']})[0])
 
 
+class StampHeader(GeneratedLock):
+    def test_cache_tables_and_format_follow_the_header(self):
+        self.write('src/x_gen.inc', self.STAMPED)
+        self.lock(format=1)
+        self.write('include/hao/gen_stamp.h', '#define HAO_GEN_OS_BUILD "26A428"\n#define HAO_GEN_FORMAT 2\n')
+        bad = '\n'.join(self.contract({'kind': 'generated-lock', 'globs': ['src/*_gen.inc'],
+                                        'stamp_header': 'include/hao/gen_stamp.h'}))
+        self.assertIn('cache table for 26B131, but include/hao/gen_stamp.h stamps 26A428', bad)
+        self.assertIn('has format 1, include/hao/gen_stamp.h says 2', bad)
+        self.write('include/hao/gen_stamp.h', '#define HAO_GEN_OS_BUILD "26B131"\n#define HAO_GEN_FORMAT 1\n')
+        self.assertEqual(self.contract({'kind': 'generated-lock', 'globs': ['src/*_gen.inc'],
+                                        'stamp_header': 'include/hao/gen_stamp.h'}), [])
+
+
 class Payload(Repo):
     def manifest(self, **over):
         (self.r / 'payload/root/usr/lib').mkdir(parents=True)
